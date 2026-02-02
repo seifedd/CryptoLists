@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// PRODUCT CATALOG
+// ============================================
+model Product {
+  id           String   @id @default(uuid())
+  shopifyId    String   @unique
+  title        String
+  description  String?
+  handle       String   @unique
+  priceInCents Int
+  currency     String   @default("USD")
+  imageUrl     String?
+  isActive     Boolean  @default(true)
+
+  variants   ProductVariant[]
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopifyId])
+  @@index([handle])
+  @@index([isActive])
+}
+
+model ProductVariant {
+  id           String  @id @default(uuid())
+  shopifyId    String  @unique
+  productId    String
+  product      Product @relation(fields: [productId], references: [id])
+  title        String
+  sku          String?
+  priceInCents Int
+  inventoryQty Int     @default(0)
+
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopifyId])
+  @@index([productId])
+}
+
+// ============================================
+// ORDER MANAGEMENT
+// ============================================
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Order {
+  id                   String      @id @default(uuid())
+  shopifyOrderId       String?     @unique
+  shopifyCheckoutToken String?     @unique
+  cartId               String
+  customerEmail        String?
+  status               OrderStatus @default(PENDING)
+  subtotalInCents      Int
+  taxInCents           Int         @default(0)
+  shippingInCents      Int         @default(0)
+  totalInCents         Int
+  currency             String      @default("USD")
+
+  items         OrderItem[]
+  transactions  Transaction[]
+  ledgerEntries LedgerEntry[]
+
+  submittedAt  DateTime  @default(now())
+  processingAt DateTime?
+  completedAt  DateTime?
+  cancelledAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([cartId])
+  @@index([shopifyOrderId])
+  @@index([shopifyCheckoutToken])
+  @@index([status])
+  @@index([customerEmail])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id               String          @id @default(uuid())
+  orderId          String
+  order            Order           @relation(fields: [orderId], references: [id])
+  productId        String
+  product          Product         @relation(fields: [productId], references: [id])
+  variantId        String?
+  variant          ProductVariant? @relation(fields: [variantId], references: [id])
+  quantity         Int
+  unitPriceInCents Int
+  totalInCents     Int
+  productTitle     String
+  variantTitle     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+// ============================================
+// FINANCIAL TRANSACTIONS
+// ============================================
+enum TransactionStatus {
+  INITIATED
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum TransactionType {
+  PAYMENT
+  REFUND
+  PARTIAL_REFUND
+  CHARGEBACK
+  CHARGEBACK_REVERSAL
+}
+
+model Transaction {
+  id                   String            @id @default(uuid())
+  orderId              String
+  order                Order             @relation(fields: [orderId], references: [id])
+  shopifyTransactionId String?           @unique
+  type                 TransactionType
+  status               TransactionStatus
+  amountInCents        Int
+  currency             String            @default("USD")
+  gatewayResponse      Json?
+  failureReason        String?
+  idempotencyKey       String            @unique
+
+  initiatedAt DateTime  @default(now())
+  processedAt DateTime?
+  completedAt DateTime?
+
+  ledgerEntries LedgerEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([shopifyTransactionId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ============================================
+// FINANCIAL LEDGER (Double-Entry Bookkeeping)
+// ============================================
+enum LedgerEntryType {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerAccountType {
+  REVENUE
+  ACCOUNTS_RECEIVABLE
+  CASH
+  REFUNDS_PAYABLE
+  TAX_COLLECTED
+  SHIPPING_REVENUE
+}
+
+model LedgerEntry {
+  id            String            @id @default(uuid())
+  orderId       String?
+  order         Order?            @relation(fields: [orderId], references: [id])
+  transactionId String?
+  transaction   Transaction?      @relation(fields: [transactionId], references: [id])
+  accountType   LedgerAccountType
+  entryType     LedgerEntryType
+  amountInCents Int
+  currency      String            @default("USD")
+  description   String?
+  referenceId   String?
+
+  createdAt  DateTime  @default(now())
+  balancedAt DateTime?
+
+  @@index([orderId])
+  @@index([transactionId])
+  @@index([accountType])
+  @@index([entryType])
+  @@index([createdAt])
+}
+
+// ============================================
+// IDEMPOTENCY & RELIABILITY
+// ============================================
+enum IdempotencyStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model IdempotencyRecord {
+  id          String            @id @default(uuid())
+  key         String            @unique
+  status      IdempotencyStatus
+  response    Json?
+  createdAt   DateTime          @default(now())
+  completedAt DateTime?
+
+  @@index([createdAt])
+  @@index([key])
+}
+
+// ============================================
+// WEBHOOK RELIABILITY (Dead Letter Queue)
+// ============================================
+enum WebhookStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  DEAD_LETTER
+}
+
+model WebhookEvent {
+  id               String        @id @default(uuid())
+  shopifyWebhookId String        @unique
+  topic            String
+  shopDomain       String
+  payload          Json
+  headers          Json
+  status           WebhookStatus @default(RECEIVED)
+  attempts         Int           @default(0)
+  maxAttempts      Int           @default(5)
+  lastError        String?
+
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  nextRetryAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([topic])
+  @@index([nextRetryAt])
+  @@index([shopifyWebhookId])
+}
